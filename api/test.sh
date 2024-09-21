@@ -1,3 +1,4 @@
+#!/bin/bash
 
 # if $1 = small, then run small input test
 if [ "$1" = "small" ]; then
