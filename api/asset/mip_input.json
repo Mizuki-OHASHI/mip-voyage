@@ -1,0 +1,40 @@
+{
+  "name": "mip_example_input",
+  "data": {
+    "boxes": [
+      {
+        "id": 0,
+        "x_min": 0,
+        "x_max": 10,
+        "y_list": [0, 1],
+        "y_num": 1,
+        "z_id": 0
+      },
+      {
+        "id": 1,
+        "x_min": 0,
+        "x_max": 10,
+        "y_list": [0],
+        "y_num": 1,
+        "z_id": 0
+      },
+      {
+        "id": 2,
+        "x_min": 0,
+        "x_max": 10,
+        "y_list": [1],
+        "y_num": 1,
+        "z_id": 1
+      }
+    ],
+    "y_list": [
+      { "id": 0,  "limit": -1 },
+      { "id": 1,  "limit": -1 }
+    ],
+    "z_matrix": [
+      [0, 1],
+      [1, 0]
+    ]
+  }
+}
+
