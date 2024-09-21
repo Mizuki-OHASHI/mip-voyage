@@ -1,17 +1,18 @@
 from datetime import datetime
+from pprint import pprint
 
 import numpy as np
-from mip import Model, xsum, maximize
+from mip import Model, xsum, minimize, MINIMIZE, CBC
 
 from data import build_validate_data, read_file, parse_json
 
 
 class MipModel(Model):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, sense="MAXIMIZE", solver_name="CBC", **kwargs)
+        super().__init__(*args, sense=MINIMIZE, solver_name=CBC, **kwargs)
 
-    def preprocess(self, input):
-        """Preprocess data before solving the model.
+    def set_input(self, input):
+        """Set input data to the model.
 
         Args:
             input (dict): JSON data, assumed to be validated by self.model_input_validator
@@ -21,7 +22,15 @@ class MipModel(Model):
         self.instance_name = name
         self.data = data
 
+        def get_z(b1: int, b2: int) -> float:
+            b1_z = data["boxes"][b1]["z_id"]
+            b2_z = data["boxes"][b2]["z_id"]
+            return data["z_matrix"][b1_z][b2_z]
+
+        self.get_z = get_z
+
         self.box_num = len(data["boxes"])
+
         # X[b][y] = 1 if box b is at self.data["y_list"][y]
         self.X = [
             [
@@ -81,6 +90,21 @@ class MipModel(Model):
             for i, box in enumerate(data["boxes"])
         ]
 
+        # help Y
+        # B[b1][b2] = Relu(Y[b1] + z_matrix(b1, b2) - Y[b2]) if b2 is above b1 else don't care
+        self.B = [
+            [
+                self.add_var(
+                    f"B_{b1}_{b2}",
+                    var_type="C",
+                    lb=0,
+                )
+                for b2 in range(self.box_num)
+            ]
+            for b1 in range(self.box_num)
+        ]
+        self.big_M_B = 100  # TODO: find a better value
+
     def model_input_validator(self):
         structure = {
             "name": str,
@@ -96,7 +120,7 @@ class MipModel(Model):
                     }
                 ],
                 "y_list": [{"id": int, "limit": int}],
-                "z_matrix": [[int]],
+                "z_matrix": [[float]],
             },
         }
         return build_validate_data(structure)
@@ -134,18 +158,32 @@ class MipModel(Model):
             self += xsum(self.H[y]) == 1
             self += xsum(self.T[y]) == 1
 
+        # constraint to bind B with Y (and A)
+        for b1 in range(self.box_num):
+            for b2 in range(self.box_num):
+                self += self.Y[b1] + self.get_z(b1, b2) - self.Y[b2] <= self.B[b1][
+                    b2
+                ] + self.big_M_B * (1 - xsum(self.A[b1][b2]))
+
     def add_objective(self):
-        self.objective = maximize(
-            100
+        self.objective = minimize(
+            -10
             * xsum(
                 self.X[b][y] for b in range(self.box_num) for y in range(len(self.X[b]))
             )
-            - xsum(
-                self.data["z_matrix"][box1["z_id"]][box2["z_id"]] * self.A[b1][b2][y]
-                for b1, box1 in enumerate(self.data["boxes"])
-                for b2, box2 in enumerate(self.data["boxes"])
+            + xsum(
+                self.get_z(b1, b2) * self.A[b1][b2][y]
+                for b1 in range(self.box_num)
+                for b2 in range(self.box_num)
                 for y in range(len(self.A_domain[b1][b2]))
             )
+            + 10
+            * xsum(
+                self.B[b1][b2]
+                for b1 in range(self.box_num)
+                for b2 in range(self.box_num)
+            )
+            + xsum(self.Y)
         )
 
     def decode(self) -> dict:
@@ -184,7 +222,33 @@ class MipModel(Model):
                 [int(self.T[y][b].x) for b in range(len(self.T[y]))]
                 for y in range(len(self.data["y_list"]))
             ],
+            "B": [
+                [self.B[b1][b2].x for b2 in range(self.box_num)]
+                for b1 in range(self.box_num)
+            ],
         }
+
+
+def visualize_optimal(decoded: dict):
+    """Visualize the optimal solution on console."""
+    boxes = decoded["boxes"]
+    boxes_by_y = {}
+    for box in boxes:
+        for y in box["y"]:
+            if y not in boxes_by_y:
+                boxes_by_y[y] = []
+            boxes_by_y[y].append((box["id"], box["x"]))
+    # visualize like a gannt chart
+    max_x = max(box["x"] for box in boxes)
+    result = {}
+    for y, boxes in boxes_by_y.items():
+        if y not in result:
+            result[y] = "   " * int(max_x)
+        for box_id, x in boxes:
+            x = int(x)
+            result[y] = result[y][: 3 * x] + f" {box_id:02}" + result[y][3 * x + 3 :]
+    for y in sorted(result.keys()):
+        print(f"{y:02}|{result[y]}")
 
 
 if __name__ == "__main__":
@@ -192,21 +256,25 @@ if __name__ == "__main__":
     log("MIP model")
     model = MipModel()
     log("read input")
-    input_str = read_file("../asset/mip_input.json")
+    SMALL_INPUT_PATH = "../asset/mip_small_input.json"
+    MIDDLE_INPUT_PATH = "../asset/mip_middle_input.json"
+    input_str = read_file(MIDDLE_INPUT_PATH)
     log("build validator")
     validator = model.model_input_validator()
     log("parse input")
     input = parse_json(input_str, validator)
-    print("Input:", input)
-    log("preprocess")
-    model.preprocess(input)
+    pprint(input)
+    log("set input")
+    model.set_input(input)
     log("add constraints")
     model.add_constraints()
     log("add objective")
     model.add_objective()
     log("solve")
-    model.optimize()
+    model.optimize(max_seconds_same_incumbent=10, max_seconds=60)
     log("solution")
     print("Objective value:", model.objective_value)
-    print("Solution:", model.decode())
-    print("Helpers:", model.decode_helpers())
+    optimal = model.decode()
+    pprint(optimal)
+    visualize_optimal(optimal)
+    print(model.decode_helpers())

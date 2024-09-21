@@ -1,5 +1,5 @@
 {
-  "name": "mip_example_input",
+  "name": "mip_small_input",
   "data": {
     "boxes": [
       {
@@ -32,8 +32,8 @@
       { "id": 1,  "limit": -1 }
     ],
     "z_matrix": [
-      [0, 1],
-      [1, 0]
+      [1, 2],
+      [2, 1]
     ]
   }
 }
