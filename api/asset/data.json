@@ -1,0 +1,8 @@
+{
+  "id": "123456",
+  "profile": {
+    "name": "John Doe",
+    "emails": ["john.doe@example.com", "john.doe@example.ac.jp"],
+    "age": 30
+  }
+}
