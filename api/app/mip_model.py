@@ -1,8 +1,8 @@
 from datetime import datetime
 from pprint import pprint
+from typing import Tuple
 
-import numpy as np
-from mip import Model, xsum, minimize, MINIMIZE, CBC
+from mip import Model, xsum, minimize, MINIMIZE, CBC, OptimizationStatus
 
 from data import build_validate_data, read_file, parse_json
 
@@ -251,6 +251,24 @@ def visualize_optimal(decoded: dict):
         print(f"{y:02}|{result[y]}")
 
 
+def run_mip_model(input_str: str) -> Tuple[bool, dict]:
+    model = MipModel()
+    validator = model.model_input_validator()
+    ok, input = parse_json(input_str, validator)
+    if not ok:
+        return False, input  # error message
+    model.set_input(input)
+    model.add_constraints()
+    model.add_objective()
+    model.optimize(max_seconds_same_incumbent=10, max_seconds=60)
+    if (
+        model.status == OptimizationStatus.OPTIMAL
+        or model.status == OptimizationStatus.FEASIBLE
+    ):
+        return True, model.decode()
+    return False, {"message": "No optimal solution found", "status": model.status.value}
+
+
 if __name__ == "__main__":
     log = lambda msg: print(f"{datetime.now().isoformat()}: {msg}")
     log("MIP model")
@@ -262,7 +280,10 @@ if __name__ == "__main__":
     log("build validator")
     validator = model.model_input_validator()
     log("parse input")
-    input = parse_json(input_str, validator)
+    ok, input = parse_json(input_str, validator)
+    if not ok:
+        raise ValueError(str(input))
+
     pprint(input)
     log("set input")
     model.set_input(input)

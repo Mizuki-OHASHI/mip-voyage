@@ -23,7 +23,11 @@ def validate_data(data: dict, structure: dict) -> ValidateResult:
         if isinstance(structure, dict):
             for key, value in structure.items():
                 if key not in data:
-                    return False, {"path": key, "value": None, "expected": value}
+                    return False, {
+                        "path": key,
+                        "value": None,
+                        "expected": structure_to_str(value),
+                    }
                 result, info = validate(data[key], value)
                 if not result:
                     return False, {"path": key + "." + info["path"], **info}
@@ -36,11 +40,31 @@ def validate_data(data: dict, structure: dict) -> ValidateResult:
             val = (int, float) if structure == float else structure
             result = isinstance(data, val)
             return result, (
-                None if result else {"path": "", "value": data, "expected": structure}
+                None
+                if result
+                else {
+                    "path": "",
+                    "value": data,
+                    "expected": structure_to_str(structure),
+                }
             )
         return True, None
 
     return validate(data, structure)
+
+
+def structure_to_str(structure: dict) -> dict:
+    """convert all types in structure to string"""
+
+    def to_str(structure):
+        if isinstance(structure, dict):
+            return {key: to_str(value) for key, value in structure.items()}
+        elif isinstance(structure, list):
+            return [to_str(structure[0])]
+        else:
+            return structure.__name__
+
+    return to_str(structure)
 
 
 def build_validate_data(structure: dict) -> Callable[[dict], ValidateResult]:
@@ -49,22 +73,19 @@ def build_validate_data(structure: dict) -> Callable[[dict], ValidateResult]:
 
 def parse_json(
     data_str: str, validator: Callable[[dict], ValidateResult] = validate_data
-) -> dict:
+) -> Tuple[bool, dict]:
     """Parse JSON data and validate it.
 
     Args:
         data_str (str): JSON data in string format
         validator (Callable[[dict, dict], bool], optional): Function to validate JSON data. Defaults to validate_data.
     Returns:
-        dict: validated JSON data in dict format
+       (bool, dict): (True, data) if data is valid, (False, error information) otherwise
     """
 
     data = json.loads(data_str)
-    result, info = validator(data)
-    if result:
-        return data
-    else:
-        raise ValueError(f"Invalid data: {info}")
+    ok, info = validator(data)
+    return ok, data if ok else info
 
 
 def read_file(file_path: str) -> str:
