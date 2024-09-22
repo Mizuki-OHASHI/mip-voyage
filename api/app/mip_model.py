@@ -116,7 +116,7 @@ class MipModel(Model):
             [
                 self.add_var(
                     f"B_{b1}_{b2}",
-                    var_type="C",
+                    var_type="B",
                     lb=0,
                 )
                 for b2 in range(self.box_num)
@@ -165,15 +165,20 @@ class MipModel(Model):
         # constraint to bind B with Y (and A)
         for b1 in range(self.box_num):
             for b2 in range(self.box_num):
-                self += self.Y[b1] + self.get_z(b1, b2) - self.Y[b2] <= self.B[b1][
-                    b2
-                ] + self.big_M_B * (1 - xsum(self.A[b1][b2]))
+                self += self.Y[b1] + self.get_z(b1, b2) - self.Y[b2] <= self.big_M_B * (
+                    self.B[b1][b2] + 1 - xsum(self.A[b1][b2])
+                )
 
     def add_objective(self):
         self.objective = minimize(
-            -100
-            * xsum(
-                self.X[b][y] for b in range(self.box_num) for y in range(len(self.X[b]))
+            100
+            * (
+                xsum(box["y_num"] for box in self.data["boxes"])
+                - xsum(
+                    self.X[b][y]
+                    for b in range(self.box_num)
+                    for y in range(len(self.X[b]))
+                )
             )
             + xsum(
                 self.get_z(b1, b2) * self.A[b1][b2][y]
@@ -181,13 +186,40 @@ class MipModel(Model):
                 for b2 in range(self.box_num)
                 for y in range(len(self.A_domain[b1][b2]))
             )
-            + 1000
+            + 10000
             * xsum(
                 self.B[b1][b2]
                 for b1 in range(self.box_num)
                 for b2 in range(self.box_num)
             )
+            + xsum(self.Y)
         )
+
+    @property
+    def detailed_objective_value(self):
+        if self.objective_value is None:
+            return None
+        return {
+            "sum_X": sum(box["y_num"] for box in self.data["boxes"])
+            - sum(
+                self.X[b][y].x
+                for b in range(self.box_num)
+                for y in range(len(self.X[b]))
+            ),
+            "sum_A": sum(
+                self.A[b1][b2][y].x
+                for b1 in range(self.box_num)
+                for b2 in range(self.box_num)
+                for y in range(len(self.A_domain[b1][b2]))
+            ),
+            "sum_B": sum(
+                self.B[b1][b2].x
+                for b1 in range(self.box_num)
+                for b2 in range(self.box_num)
+            ),
+            "sum_Y": sum(self.Y[b].x for b in range(self.box_num)),
+            "objective": self.objective_value,
+        }
 
     def decode(self) -> dict:
         return {
@@ -313,7 +345,7 @@ if __name__ == "__main__":
     else:
         raise ValueError("Usage: python mip_model.py [small|middle|random]")
 
-    print(input_model)
+    pprint(input_model)
     model.set_input(input_model)
     model.add_constraints()
     model.add_objective()
@@ -323,6 +355,21 @@ if __name__ == "__main__":
     pprint(optimal)
     visualize_optimal(optimal)
     helpers = model.decode_helpers()
-    B = helpers["B"]
-    B = [[f"{int(x):2}" if x > 0 else "  " for x in row] for row in B]
-    print("\n".join(" ".join(row) for row in B))
+    print("H:", helpers["H"], "T:", helpers["T"])
+    positive_A = {}
+    for b1 in range(model.box_num):
+        for b2 in range(model.box_num):
+            for y_idx in range(len(helpers["A"][b1][b2])):
+                if helpers["A"][b1][b2][y_idx] > 0:
+                    y = model.A_domain[b1][b2][y_idx]
+                    if y not in positive_A:
+                        positive_A[y] = []
+                    positive_A[y].append((b1, b2))
+    print("list of A with positive value:", positive_A)
+    positive_B = []
+    for b1 in range(model.box_num):
+        for b2 in range(model.box_num):
+            if helpers["B"][b1][b2] > 0:
+                positive_B.append((b1, b2))
+    print("list of B with positive value:", positive_B)
+    pprint({"detailed_objective": model.detailed_objective_value})

@@ -18,7 +18,7 @@ def make_input(
         name (str): Name of the input data
         params (dict): Parameters for the input data
     ```
-    {
+    params = {
         "y_num_rate": float,  # y_num is 1 with this rate (default: 0.8)
         "y_list_rate": float, # rate of selecting y_list (default: 0.5)
     }
@@ -40,7 +40,7 @@ def make_input(
     z_matrix = [[randint(2, 10) for _ in range(z_num)] for _ in range(z_num)]
 
     x_min_list = [randint(0, 20) for _ in range(box_num)]
-    x_max_list = [x_min + randint(0, 20) for x_min in x_min_list]
+    x_max_list = [x_min + randint(0, 40) for x_min in x_min_list]
     boxes = [
         {
             "id": i,
