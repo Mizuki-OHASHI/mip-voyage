@@ -1,6 +1,7 @@
 from datetime import datetime
 from pprint import pprint
 from typing import Tuple
+from os import path
 
 from mip import Model, xsum, minimize, MINIMIZE, CBC, OptimizationStatus
 
@@ -10,6 +11,23 @@ from data import build_validate_data, read_file, parse_json
 class MipModel(Model):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, sense=MINIMIZE, solver_name=CBC, **kwargs)
+        self.input_structure = {
+            "name": str,
+            "data": {
+                "boxes": [
+                    {
+                        "id": int,
+                        "x_min": float,
+                        "x_max": float,
+                        "y_list": [int],
+                        "y_num": int,
+                        "z_id": int,
+                    }
+                ],
+                "y_list": [{"id": int, "limit": int}],
+                "z_matrix": [[float]],
+            },
+        }
 
     def set_input(self, input):
         """Set input data to the model.
@@ -105,25 +123,9 @@ class MipModel(Model):
         ]
         self.big_M_B = 100  # TODO: find a better value
 
+    @property
     def model_input_validator(self):
-        structure = {
-            "name": str,
-            "data": {
-                "boxes": [
-                    {
-                        "id": int,
-                        "x_min": float,
-                        "x_max": float,
-                        "y_list": [int],
-                        "y_num": int,
-                        "z_id": int,
-                    }
-                ],
-                "y_list": [{"id": int, "limit": int}],
-                "z_matrix": [[float]],
-            },
-        }
-        return build_validate_data(structure)
+        return build_validate_data(self.input_structure)
 
     def add_constraints(self):
         # constraint on X
@@ -253,47 +255,39 @@ def visualize_optimal(decoded: dict):
 
 def run_mip_model(input_str: str) -> Tuple[bool, dict]:
     model = MipModel()
-    validator = model.model_input_validator()
-    ok, input = parse_json(input_str, validator)
+    ok, input = parse_json(input_str, model.model_input_validator)
     if not ok:
         return False, input  # error message
     model.set_input(input)
     model.add_constraints()
     model.add_objective()
-    model.optimize(max_seconds_same_incumbent=10, max_seconds=60)
-    if (
-        model.status == OptimizationStatus.OPTIMAL
-        or model.status == OptimizationStatus.FEASIBLE
-    ):
-        return True, model.decode()
-    return False, {"message": "No optimal solution found", "status": model.status.value}
+    status = model.optimize(max_seconds_same_incumbent=10, max_seconds=60)
+    if status == OptimizationStatus.OPTIMAL or status == OptimizationStatus.FEASIBLE:
+        solution = model.decode()
+        objective_value = model.objective_value
+        return True, {
+            "solution": solution,
+            "status": status.name,
+            "objective": objective_value,
+        }
+    return False, {"message": "No optimal solution found", "status": status.name}
 
 
 if __name__ == "__main__":
-    log = lambda msg: print(f"{datetime.now().isoformat()}: {msg}")
-    log("MIP model")
     model = MipModel()
-    log("read input")
-    SMALL_INPUT_PATH = "../asset/mip_small_input.json"
-    MIDDLE_INPUT_PATH = "../asset/mip_middle_input.json"
+    BASE = "/usr/src/api/asset"
+    SMALL_INPUT_PATH = path.join(BASE, "mip_small_input.json")
+    MIDDLE_INPUT_PATH = path.join(BASE, "mip_middle_input.json")
     input_str = read_file(MIDDLE_INPUT_PATH)
-    log("build validator")
-    validator = model.model_input_validator()
-    log("parse input")
-    ok, input = parse_json(input_str, validator)
+    ok, input = parse_json(input_str, model.model_input_validator)
     if not ok:
         raise ValueError(str(input))
 
     pprint(input)
-    log("set input")
     model.set_input(input)
-    log("add constraints")
     model.add_constraints()
-    log("add objective")
     model.add_objective()
-    log("solve")
     model.optimize(max_seconds_same_incumbent=10, max_seconds=60)
-    log("solution")
     print("Objective value:", model.objective_value)
     optimal = model.decode()
     pprint(optimal)
