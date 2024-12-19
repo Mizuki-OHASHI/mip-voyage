@@ -1,15 +1,35 @@
 from datetime import datetime
 from pprint import pprint
 from typing import Tuple
+from os import path
+import sys
 
 from mip import Model, xsum, minimize, MINIMIZE, CBC, OptimizationStatus
 
+from make_input import make_input
 from data import build_validate_data, read_file, parse_json
 
 
 class MipModel(Model):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, sense=MINIMIZE, solver_name=CBC, **kwargs)
+        self.input_structure = {
+            "name": str,
+            "data": {
+                "boxes": [
+                    {
+                        "id": int,
+                        "x_min": float,
+                        "x_max": float,
+                        "y_list": [int],
+                        "y_num": int,
+                        "z_id": int,
+                    }
+                ],
+                "y_list": [{"id": int, "limit": int}],
+                "z_matrix": [[float]],
+            },
+        }
 
     def set_input(self, input):
         """Set input data to the model.
@@ -91,12 +111,12 @@ class MipModel(Model):
         ]
 
         # help Y
-        # B[b1][b2] = Relu(Y[b1] + z_matrix(b1, b2) - Y[b2]) if b2 is above b1 else don't care
+        # B[b1][b2] = ReLU(Y[b1] + z_matrix(b1, b2) - Y[b2]) if b2 is above b1 else don't care
         self.B = [
             [
                 self.add_var(
                     f"B_{b1}_{b2}",
-                    var_type="C",
+                    var_type="B",
                     lb=0,
                 )
                 for b2 in range(self.box_num)
@@ -105,25 +125,9 @@ class MipModel(Model):
         ]
         self.big_M_B = 100  # TODO: find a better value
 
+    @property
     def model_input_validator(self):
-        structure = {
-            "name": str,
-            "data": {
-                "boxes": [
-                    {
-                        "id": int,
-                        "x_min": float,
-                        "x_max": float,
-                        "y_list": [int],
-                        "y_num": int,
-                        "z_id": int,
-                    }
-                ],
-                "y_list": [{"id": int, "limit": int}],
-                "z_matrix": [[float]],
-            },
-        }
-        return build_validate_data(structure)
+        return build_validate_data(self.input_structure)
 
     def add_constraints(self):
         # constraint on X
@@ -161,15 +165,20 @@ class MipModel(Model):
         # constraint to bind B with Y (and A)
         for b1 in range(self.box_num):
             for b2 in range(self.box_num):
-                self += self.Y[b1] + self.get_z(b1, b2) - self.Y[b2] <= self.B[b1][
-                    b2
-                ] + self.big_M_B * (1 - xsum(self.A[b1][b2]))
+                self += self.Y[b1] + self.get_z(b1, b2) - self.Y[b2] <= self.big_M_B * (
+                    self.B[b1][b2] + 1 - xsum(self.A[b1][b2])
+                )
 
     def add_objective(self):
         self.objective = minimize(
-            -10
-            * xsum(
-                self.X[b][y] for b in range(self.box_num) for y in range(len(self.X[b]))
+            100
+            * (
+                xsum(box["y_num"] for box in self.data["boxes"])
+                - xsum(
+                    self.X[b][y]
+                    for b in range(self.box_num)
+                    for y in range(len(self.X[b]))
+                )
             )
             + xsum(
                 self.get_z(b1, b2) * self.A[b1][b2][y]
@@ -177,7 +186,7 @@ class MipModel(Model):
                 for b2 in range(self.box_num)
                 for y in range(len(self.A_domain[b1][b2]))
             )
-            + 10
+            + 10000
             * xsum(
                 self.B[b1][b2]
                 for b1 in range(self.box_num)
@@ -185,6 +194,32 @@ class MipModel(Model):
             )
             + xsum(self.Y)
         )
+
+    @property
+    def detailed_objective_value(self):
+        if self.objective_value is None:
+            return None
+        return {
+            "sum_X": sum(box["y_num"] for box in self.data["boxes"])
+            - sum(
+                self.X[b][y].x
+                for b in range(self.box_num)
+                for y in range(len(self.X[b]))
+            ),
+            "sum_A": sum(
+                self.A[b1][b2][y].x
+                for b1 in range(self.box_num)
+                for b2 in range(self.box_num)
+                for y in range(len(self.A_domain[b1][b2]))
+            ),
+            "sum_B": sum(
+                self.B[b1][b2].x
+                for b1 in range(self.box_num)
+                for b2 in range(self.box_num)
+            ),
+            "sum_Y": sum(self.Y[b].x for b in range(self.box_num)),
+            "objective": self.objective_value,
+        }
 
     def decode(self) -> dict:
         return {
@@ -223,7 +258,7 @@ class MipModel(Model):
                 for y in range(len(self.data["y_list"]))
             ],
             "B": [
-                [self.B[b1][b2].x for b2 in range(self.box_num)]
+                [round(self.B[b1][b2].x) for b2 in range(self.box_num)]
                 for b1 in range(self.box_num)
             ],
         }
@@ -243,59 +278,98 @@ def visualize_optimal(decoded: dict):
     result = {}
     for y, boxes in boxes_by_y.items():
         if y not in result:
-            result[y] = "   " * int(max_x)
+            result[y] = " " * 3 * int(max_x)
         for box_id, x in boxes:
             x = int(x)
-            result[y] = result[y][: 3 * x] + f" {box_id:02}" + result[y][3 * x + 3 :]
+            result[y] = result[y][: 3 * x] + f" {box_id:2}" + result[y][3 * x + 3 :]
     for y in sorted(result.keys()):
-        print(f"{y:02}|{result[y]}")
+        print(f"{y:2}|{result[y]}")
 
 
 def run_mip_model(input_str: str) -> Tuple[bool, dict]:
     model = MipModel()
-    validator = model.model_input_validator()
-    ok, input = parse_json(input_str, validator)
+    ok, input = parse_json(input_str, model.model_input_validator)
     if not ok:
         return False, input  # error message
     model.set_input(input)
     model.add_constraints()
     model.add_objective()
-    model.optimize(max_seconds_same_incumbent=10, max_seconds=60)
-    if (
-        model.status == OptimizationStatus.OPTIMAL
-        or model.status == OptimizationStatus.FEASIBLE
-    ):
-        return True, model.decode()
-    return False, {"message": "No optimal solution found", "status": model.status.value}
+    status = model.optimize(max_seconds_same_incumbent=10, max_seconds=60)
+    if status == OptimizationStatus.OPTIMAL or status == OptimizationStatus.FEASIBLE:
+        solution = model.decode()
+        objective_value = model.objective_value
+        return True, {
+            "solution": solution,
+            "status": status.name,
+            "objective": objective_value,
+        }
+    return False, {"message": "No optimal solution found", "status": status.name}
 
 
 if __name__ == "__main__":
-    log = lambda msg: print(f"{datetime.now().isoformat()}: {msg}")
-    log("MIP model")
     model = MipModel()
-    log("read input")
-    SMALL_INPUT_PATH = "../asset/mip_small_input.json"
-    MIDDLE_INPUT_PATH = "../asset/mip_middle_input.json"
-    input_str = read_file(MIDDLE_INPUT_PATH)
-    log("build validator")
-    validator = model.model_input_validator()
-    log("parse input")
-    ok, input = parse_json(input_str, validator)
-    if not ok:
-        raise ValueError(str(input))
 
-    pprint(input)
-    log("set input")
-    model.set_input(input)
-    log("add constraints")
+    BASE = "/usr/src/api/asset"
+    SMALL_INPUT_PATH = path.join(BASE, "mip_small_input.json")
+    MIDDLE_INPUT_PATH = path.join(BASE, "mip_middle_input.json")
+    input_type = sys.argv[1] if len(sys.argv) > 1 else "small"
+    if input_type in ["small", "middle"]:
+        print(f"Running MIP model with {input_type} input")
+        model_path = {"small": SMALL_INPUT_PATH, "middle": MIDDLE_INPUT_PATH}
+        input_str = read_file(model_path[input_type])
+        ok, input_model = parse_json(input_str, model.model_input_validator)
+        if not ok:
+            raise ValueError(str(input))
+    elif input_type == "random":
+        params_list = [  # [name, label, default]
+            ["box_num", "box number", 10],
+            ["y_num", "y number", 3],
+            ["seed_num", "seed number", 0],
+        ]
+        params = {}
+
+        for name, label, default in params_list:
+            value = input(f"Enter {label} (default: {default}): ")
+            try:
+                value = int(value) if value else default
+            except ValueError:
+                print(f"Invalid value: {value}")
+                print(f"Using default value: {default}")
+                value = default
+            params[name] = value
+
+        input_model = make_input(**params)
+        ok, info = model.model_input_validator(input_model)
+        if not ok:
+            raise ValueError(str(info))
+    else:
+        raise ValueError("Usage: python mip_model.py [small|middle|random]")
+
+    pprint(input_model)
+    model.set_input(input_model)
     model.add_constraints()
-    log("add objective")
     model.add_objective()
-    log("solve")
-    model.optimize(max_seconds_same_incumbent=10, max_seconds=60)
-    log("solution")
+    model.optimize(max_seconds_same_incumbent=10, max_seconds=120)
     print("Objective value:", model.objective_value)
     optimal = model.decode()
     pprint(optimal)
     visualize_optimal(optimal)
-    print(model.decode_helpers())
+    helpers = model.decode_helpers()
+    print("H:", helpers["H"], "T:", helpers["T"])
+    positive_A = {}
+    for b1 in range(model.box_num):
+        for b2 in range(model.box_num):
+            for y_idx in range(len(helpers["A"][b1][b2])):
+                if helpers["A"][b1][b2][y_idx] > 0:
+                    y = model.A_domain[b1][b2][y_idx]
+                    if y not in positive_A:
+                        positive_A[y] = []
+                    positive_A[y].append((b1, b2))
+    print("list of A with positive value:", positive_A)
+    positive_B = []
+    for b1 in range(model.box_num):
+        for b2 in range(model.box_num):
+            if helpers["B"][b1][b2] > 0:
+                positive_B.append((b1, b2))
+    print("list of B with positive value:", positive_B)
+    pprint({"detailed_objective": model.detailed_objective_value})
